@@ -1,9 +1,11 @@
 const { Telegraf, Markup, Scenes, session } = require("telegraf");
 const dotenv = require('dotenv').config()
-const {faceSwap} = require('./swap')
+const {faceSwap, videoSwap} = require('./swap')
 const axios = require('axios');
 const sharp = require('sharp');
+const { URL } = require("url");
 const fs = require('fs').promises;
+
 
 
 
@@ -13,9 +15,11 @@ console.log(botToken)
 const bot = new Telegraf(botToken);
 
 const faceSwapScene = new Scenes.BaseScene('faceSwapScene')
+const gifSwapScene = new Scenes.BaseScene('gifSwapScene')
 
 const stage = new Scenes.Stage([
-    faceSwapScene
+    faceSwapScene,
+    gifSwapScene
 ])
 bot.use(session());
 bot.use(stage.middleware());
@@ -28,6 +32,25 @@ const saveWebLogo = async (fileId) => {
         const imageLink = await bot.telegram.getFileLink(fileId);
         console.log('Received image link:', imageLink);
         return imageLink;
+    } catch (error) {
+        console.error('Error processing image:', error.message);
+
+        if (error.response && error.response.error_code === 401) {
+            // Handle unauthorized error
+            console.error('Unauthorized access. Check bot token and permissions.');
+        }
+
+        throw error;
+    }
+};
+
+const saveVidLogo = async (fileId) => {
+    try {
+        console.log('Requesting file link for file ID:', fileId);
+        // Get the image link from Telegram
+        const imageLink = await bot.telegram.getFileLink(fileId);
+        console.log('Received image link:', imageLink);
+        return new URL(imageLink.href);
     } catch (error) {
         console.error('Error processing image:', error.message);
 
@@ -148,6 +171,73 @@ faceSwapScene.enter(async (ctx)=>{
     ctx.scene.leave();
 });
 
+gifSwapScene.enter(async(ctx)=>{
+     ctx.reply("Please send the target video/gif")
+
+     ctx.session.gifSwapData ={}
+     ctx.session.gifSwapStep = 1
+})
+
+gifSwapScene.on("message", async(ctx)=>{
+    const currentStep = ctx.session.gifSwapStep || 1
+
+   switch (currentStep) {
+    case 1: 
+        if (ctx.message.video) {
+            // Check if the document is a video by checking the mime_type
+            if (ctx.message.video.mime_type.startsWith('video')) {
+                // Process video
+                const targetVideoFileId = ctx.message.video.file_id;
+                ctx.session.gifSwapData.targetGif = targetVideoFileId;  // Store the video file ID
+                console.log('Received target video file:', targetVideoFileId);
+
+                await ctx.reply('Target video received!', {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: "Swap Faces", callback_data: 'video_swap' }]
+                        ]
+                    }
+                });
+                ctx.session.faceSwapStep = 2;  // Move to the next step
+            } else {
+                // If the document is not a video, reject it
+                await ctx.reply('Error: Please send a video file only!');
+            }
+        } else if (ctx.message.photo) {
+            // Reject photos
+            await ctx.reply("Invalid file format, please send a video!");
+        } else {
+            // If neither a document nor a photo, ask for a valid input
+            await ctx.reply('Error: Please send a valid video file.');
+        }
+        break;
+}
+
+})
+
+gifSwapScene.action("video_swap", async (ctx) => {
+    await ctx.reply("Processing....");
+    
+    const videoSwapData = ctx.session.gifSwapData;
+    
+    // Download or save the target video (assuming saveWebLogo returns a path or URL)
+    const targetVideo = await saveVidLogo(videoSwapData.targetGif);
+    
+    try {
+        // Call the video swapping service and get the swapped video URL
+        const swapVideoUrl = await videoSwap(targetVideo);
+        
+        // Send the swapped video back to the user
+        await ctx.replyWithVideo({ url: swapVideoUrl }, { caption: "Here is your swapped video!" });
+    } catch (error) {
+        // Handle any error that occurs during the swap process
+        console.error("Error during video swap:", error);
+        await ctx.reply("Sorry, there was an error processing your video swap. Please try again later.");
+    }
+});
+
+
+
 
 bot.start((ctx)=>{
     ctx.reply("Hello welcome to pavel Face Swapper", {
@@ -165,14 +255,17 @@ bot.start((ctx)=>{
 bot.action('swapface', async (ctx)=>{
     ctx.scene.enter("faceSwapScene")
 })
+bot.action("gifSwap", async(ctx)=>{
+    ctx.scene.enter("gifSwapScene")
+})
 
 
 
-bot.launch({
-    webhook: {
-        domain: 'https://pavelbot.onrender.com',
-        port: process.env.PORT || 3000,
-    },
-});
+// bot.launch({
+//     webhook: {
+//         domain: 'https://pavelbot.onrender.com',
+//         port: process.env.PORT || 3000,
+//     },
+// });
 
-// bot.launch()
+bot.launch()
